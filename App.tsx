@@ -103,7 +103,7 @@ export default function App() {
                  <div className="flex flex-col items-center text-center">
                    
                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-bold uppercase tracking-wider mb-8">
-                     <Zap className="w-3 h-3 fill-blue-400" /> Free & Open Source
+                     <Zap className="w-3 h-3 fill-blue-400" /> TRIAL PERIOD & BETA TESTING
                    </div>
 
                    <h1 id="hero-title" className="text-5xl md:text-7xl font-black tracking-tighter mb-6 bg-gradient-to-b from-white to-zinc-400 bg-clip-text text-transparent">
@@ -267,7 +267,7 @@ export default function App() {
             </div>
             
             <footer className="py-8 border-t border-white/5 text-center text-zinc-600 text-sm">
-              <p>&copy; 2024 ChromaCal. Free Professional Calibration.</p>
+              <p>&copy; 2026 Chromacal By ZAP. Professional Monitor Calibrator</p>
             </footer>
           </div>
         );

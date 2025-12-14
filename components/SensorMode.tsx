@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Camera, RefreshCw, XCircle, Crosshair, Lock, Unlock, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Camera, RefreshCw, XCircle, Crosshair, Lock, Unlock, AlertCircle, CheckCircle2, Scan } from 'lucide-react';
 import { RGB } from '../types';
 
 interface SensorModeProps {
@@ -14,6 +14,8 @@ interface ExtendedMediaTrackSettings extends MediaTrackSettings {
   iso?: number;
   focusMode?: string;
   focusDistance?: number;
+  colorTemperature?: number;
+  zoom?: number;
 }
 
 interface ExtendedMediaTrackCapabilities extends MediaTrackCapabilities {
@@ -26,6 +28,7 @@ export const SensorMode: React.FC<SensorModeProps> = ({ onBack }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const historyRef = useRef<RGB[]>([]); 
+  const containerRef = useRef<HTMLDivElement>(null);
   
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [measuredRGB, setMeasuredRGB] = useState<RGB>({ r: 0, g: 0, b: 0 });
@@ -37,6 +40,9 @@ export const SensorMode: React.FC<SensorModeProps> = ({ onBack }) => {
   const [calibrationStage, setCalibrationStage] = useState<'SETUP' | 'MEASURING'>('SETUP');
   const [isHardwareLocked, setIsHardwareLocked] = useState(false);
   const [referenceWhite, setReferenceWhite] = useState<RGB | null>(null);
+
+  // Focus State
+  const [focusPoint, setFocusPoint] = useState<{x: number, y: number} | null>(null);
 
   const startCamera = async () => {
     try {
@@ -79,8 +85,56 @@ export const SensorMode: React.FC<SensorModeProps> = ({ onBack }) => {
     return () => stopCamera();
   }, []);
 
+  // --- Tap to Focus Logic ---
+  const handleTapToFocus = async (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+    // Only allow focus changes in SETUP mode to avoid breaking lock
+    if (calibrationStage !== 'SETUP' || !stream || !containerRef.current) return;
+
+    // Get coordinates
+    const rect = containerRef.current.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    // 1. Visual Feedback
+    setFocusPoint({ x, y });
+    // Remove focus ring after animation
+    setTimeout(() => setFocusPoint(null), 1000);
+
+    // 2. Apply Camera Constraint
+    const track = stream.getVideoTracks()[0];
+    const capabilities = (track.getCapabilities ? track.getCapabilities() : {}) as ExtendedMediaTrackCapabilities;
+
+    // Calculate normalized coordinates (0.0 - 1.0)
+    const normX = x / rect.width;
+    const normY = y / rect.height;
+
+    try {
+      // Try using experimental pointsOfInterest if available (Chrome Android)
+      const constraints: any = { 
+        advanced: [{ 
+          pointsOfInterest: [{ x: normX, y: normY }],
+          focusMode: 'continuous' // Ensure it triggers a seek
+        }] 
+      };
+      
+      await track.applyConstraints(constraints);
+    } catch (err) {
+      // Fallback: Just try to trigger standard continuous focus
+      try {
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] } as any);
+      } catch (e) {
+        console.debug("Focus constraint failed", e);
+      }
+    }
+  };
+
   // --- Lock Exposure Logic ---
-  const handleLockExposure = async () => {
+  const handleLockExposure = async (e?: React.MouseEvent) => {
+    if(e) e.stopPropagation(); // Prevent tap-to-focus when clicking button
+    
     if (!stream) return;
     const track = stream.getVideoTracks()[0];
     
@@ -95,12 +149,11 @@ export const SensorMode: React.FC<SensorModeProps> = ({ onBack }) => {
       const advancedConstraints: any = {};
       let hasAdvanced = false;
 
-      // Logic: If device supports manual mode, switch to 'manual' using current current settings as values if possible,
-      // or just setting mode to manual often locks current values on many implementations.
+      // Logic: If device supports manual mode, switch to 'manual' using current settings as values if possible.
+      // This preserves the focus distance set by the previous Tap-to-Focus interaction.
       
       if (capabilities.exposureMode && capabilities.exposureMode.includes('manual')) {
         advancedConstraints.exposureMode = 'manual';
-        // Some devices require explicit time/iso to lock, others just need mode=manual
         if (settings.exposureTime) advancedConstraints.exposureTime = settings.exposureTime;
         if (settings.iso) advancedConstraints.iso = settings.iso;
         hasAdvanced = true;
@@ -114,6 +167,7 @@ export const SensorMode: React.FC<SensorModeProps> = ({ onBack }) => {
 
       if (capabilities.focusMode && capabilities.focusMode.includes('manual')) {
         advancedConstraints.focusMode = 'manual';
+        // IMPORTANT: Lock at current focus distance (set by auto-focus or tap-to-focus)
         if (settings.focusDistance) advancedConstraints.focusDistance = settings.focusDistance;
         hasAdvanced = true;
       }
@@ -123,8 +177,6 @@ export const SensorMode: React.FC<SensorModeProps> = ({ onBack }) => {
         setIsHardwareLocked(true);
       } else {
         console.warn("Hardware locking not fully supported, relying on software reference.");
-        // We still proceed, using referenceWhite for normalization if we implemented that logic,
-        // but for now we just mark as locked so user knows not to move.
         setIsHardwareLocked(false); 
       }
       
@@ -224,7 +276,7 @@ export const SensorMode: React.FC<SensorModeProps> = ({ onBack }) => {
   const hexString = `#${((1 << 24) + (measuredRGB.r << 16) + (measuredRGB.g << 8) + measuredRGB.b).toString(16).slice(1).toUpperCase()}`;
 
   return (
-    <div className="flex flex-col h-screen bg-black text-white">
+    <div className="flex flex-col h-screen bg-black text-white select-none">
       {/* Header */}
       <div className="p-4 flex items-center justify-between border-b border-white/10 bg-zinc-900/50 backdrop-blur z-20">
         <button onClick={onBack} className="p-2 hover:bg-white/10 rounded-full transition-colors">
@@ -244,7 +296,16 @@ export const SensorMode: React.FC<SensorModeProps> = ({ onBack }) => {
       </div>
 
       {/* Main Viewport */}
-      <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
+      <div 
+        ref={containerRef}
+        className="relative flex-1 bg-black flex items-center justify-center overflow-hidden cursor-crosshair touch-none"
+        onClick={handleTapToFocus}
+        onTouchEnd={(e) => {
+          // Prevent ghost clicks but allow handler
+          // handleTapToFocus will extract touch data
+          handleTapToFocus(e);
+        }}
+      >
         {error ? (
           <div className="text-red-400 p-8 text-center max-w-xs">{error}</div>
         ) : (
@@ -257,39 +318,56 @@ export const SensorMode: React.FC<SensorModeProps> = ({ onBack }) => {
               className="absolute inset-0 w-full h-full object-cover opacity-80"
             />
             <canvas ref={canvasRef} className="hidden" />
+
+            {/* Focus Ring Animation */}
+            {focusPoint && (
+              <div 
+                className="absolute w-16 h-16 border-2 border-yellow-400 rounded-lg -translate-x-1/2 -translate-y-1/2 pointer-events-none z-30 animate-[ping_0.5s_ease-out_1]"
+                style={{ top: focusPoint.y, left: focusPoint.x }}
+              >
+                <div className="absolute inset-0 border border-white/50 rounded-lg"></div>
+              </div>
+            )}
             
             {/* STAGE 1: SETUP OVERLAY */}
             {calibrationStage === 'SETUP' && (
-              <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center p-6 z-10 animate-in fade-in">
-                 <div className="max-w-md w-full text-center space-y-6">
-                    <div className="w-20 h-20 rounded-full bg-white/10 flex items-center justify-center mx-auto border-2 border-white/20">
-                       <Lock className="w-10 h-10 text-blue-400" />
-                    </div>
-                    <div>
-                      <h3 className="text-2xl font-bold mb-2">Exposure Lock</h3>
-                      <p className="text-zinc-300">
-                        Cameras constantly change brightness. To measure accurately, we must lock the exposure.
-                      </p>
-                    </div>
-                    
-                    <div className="bg-blue-500/20 border border-blue-500/30 p-4 rounded-xl text-left">
-                       <h4 className="font-bold text-blue-200 text-sm uppercase mb-2">Instructions</h4>
-                       <ol className="list-decimal pl-4 text-sm text-zinc-200 space-y-2">
-                         <li>On your computer, ensure the <strong>"Reference White"</strong> screen is visible.</li>
-                         <li>Point your camera at the center of the white screen.</li>
-                         <li>Wait for the camera to settle (1-2 seconds).</li>
-                         <li>Tap the button below to lock settings.</li>
-                       </ol>
+              <div className="absolute inset-0 flex flex-col items-center justify-center p-6 z-10 animate-in fade-in pointer-events-none">
+                 {/* Background Blur only on bottom/text area so we can see camera */}
+                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-black/40"></div>
+                 
+                 <div className="max-w-md w-full text-center space-y-6 pointer-events-auto">
+                    {/* Top Guide */}
+                    <div className="absolute top-8 left-0 right-0 text-center">
+                       <p className="text-white/70 text-sm font-medium bg-black/40 inline-block px-4 py-2 rounded-full backdrop-blur-md">
+                         <Scan className="w-4 h-4 inline mr-2" /> Tap screen to focus
+                       </p>
                     </div>
 
-                    <div className="pt-4">
-                      <div className="text-xs text-zinc-500 mb-2 font-mono">Current Reading: {rgbString}</div>
-                      <button 
-                        onClick={handleLockExposure}
-                        className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-lg shadow-lg shadow-blue-900/40 transition-transform active:scale-95 flex items-center justify-center gap-2"
-                      >
-                        <Lock className="w-5 h-5" /> Lock Exposure & Start
-                      </button>
+                    <div className="mt-40">
+                      <h3 className="text-2xl font-bold mb-2 drop-shadow-md">Exposure Lock</h3>
+                      <p className="text-zinc-300 drop-shadow-md text-sm mb-6">
+                        Point camera at the white patch.
+                      </p>
+                      
+                      <div className="bg-zinc-900/80 backdrop-blur-md border border-white/10 p-4 rounded-xl text-left mb-6 shadow-xl">
+                         <h4 className="font-bold text-blue-400 text-xs uppercase mb-2">Instructions</h4>
+                         <ol className="list-decimal pl-4 text-xs text-zinc-200 space-y-2">
+                           <li>Ensure <strong>"Reference White"</strong> is on screen.</li>
+                           <li>Tap screen to <strong>Focus</strong> on center.</li>
+                           <li>Wait for stable reading.</li>
+                           <li><strong>Lock Exposure</strong> before measuring colors.</li>
+                         </ol>
+                      </div>
+
+                      <div>
+                        <div className="text-xs text-zinc-400 mb-2 font-mono">Current: {rgbString}</div>
+                        <button 
+                          onClick={handleLockExposure}
+                          className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-lg shadow-lg shadow-blue-900/40 transition-transform active:scale-95 flex items-center justify-center gap-2"
+                        >
+                          <Lock className="w-5 h-5" /> Lock Exposure & Start
+                        </button>
+                      </div>
                     </div>
                  </div>
               </div>
